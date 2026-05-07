@@ -238,6 +238,30 @@ td.today-col { background: #fff8f8; }
     </div>
   </div>
 
+  <!-- 编辑项目面板 -->
+  <div class="panel" id="editProjectPanel">
+    <div class="panel-title">编辑项目</div>
+    <input type="hidden" id="editPid">
+    <div class="form-row">
+      <span class="form-label">项目名称</span>
+      <input type="text" id="editPName" placeholder="">
+    </div>
+    <div class="form-row">
+      <span class="form-label">颜色</span>
+      <input type="color" id="editPColor" value="#b5d4f4">
+      <input type="text"  id="editPHex"   placeholder="#b5d4f4" style="max-width:90px">
+    </div>
+    <div class="form-row">
+      <span class="form-label">备注</span>
+      <input type="text" id="editPNote" placeholder="负责人、工艺要求等">
+    </div>
+    <div class="form-actions">
+      <button class="btn primary" id="confirmEditProject">保存修改</button>
+      <button class="btn danger" id="deleteProject">删除项目</button>
+      <button class="btn" id="cancelEditProject">取消</button>
+    </div>
+  </div>
+
   <!-- 管理釜位面板 -->
   <div class="panel" id="reactorPanel">
     <div class="panel-hd">
@@ -282,6 +306,12 @@ td.today-col { background: #fff8f8; }
   <div class="ctx-item" id="ctxFillCol">填满整列（本釜）</div>
   <div class="ctx-item danger" id="ctxClearRow">清空整行</div>
   <div class="ctx-item danger" id="ctxClearCell">清除此格</div>
+</div>
+
+<!-- Project context menu -->
+<div class="ctx-menu" id="projCtxMenu">
+  <div class="ctx-item" id="projCtxEdit">编辑项目</div>
+  <div class="ctx-item danger" id="projCtxDelete">删除项目</div>
 </div>
 
 <!-- Tooltip -->
@@ -464,7 +494,7 @@ let ctxTarget = null;
 // ==================== Legend ====================
 function buildLegend() {
   const bar = document.getElementById('legendBar');
-  bar.innerHTML = '<span style="font-size:12px;color:#888780;margin-right:4px">点选项目填入：</span>';
+  bar.innerHTML = '<span style="font-size:12px;color:#888780;margin-right:4px">点选项目：</span>';
   projects.forEach(p => {
     const item = document.createElement('div');
     item.className = 'legend-item' + (p.id === selectedProjectId ? ' selected' : '');
@@ -477,6 +507,10 @@ function buildLegend() {
         selectedProjectId = p.id;
       }
       buildLegend();
+    });
+    item.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      showProjectCtxMenu(e.clientX, e.clientY, p.id);
     });
     bar.appendChild(item);
   });
@@ -615,7 +649,10 @@ function showCtxMenu(x, y) {
   ctxMenu.style.display = 'block';
 }
 function hideCtxMenu() { ctxMenu.style.display = 'none'; }
-document.addEventListener('click', hideCtxMenu);
+document.addEventListener('click', e => {
+  hideCtxMenu();
+  hideProjectCtxMenu();
+});
 document.addEventListener('keydown', e => { if (e.key==='Escape') { hideCtxMenu(); closeAllPanels(); } });
 
 
@@ -720,6 +757,61 @@ document.getElementById('confirmProject').addEventListener('click', () => {
   document.getElementById('pNote').value = '';
 });
 
+// ==================== Project context menu ====================
+let projCtxPid = null;
+const projCtxMenu = document.getElementById('projCtxMenu');
+
+function showProjectCtxMenu(x, y, pid) {
+  projCtxPid = pid;
+  projCtxMenu.style.left = x + 'px';
+  projCtxMenu.style.top  = y + 'px';
+  projCtxMenu.style.display = 'block';
+}
+
+function hideProjectCtxMenu() { projCtxMenu.style.display = 'none'; }
+
+document.getElementById('projCtxEdit').addEventListener('click', () => {
+  const p = getProject(projCtxPid);
+  if (!p) return;
+  document.getElementById('editPid').value = p.id;
+  document.getElementById('editPName').value = p.name;
+  document.getElementById('editPColor').value = p.color;
+  document.getElementById('editPHex').value = p.color;
+  document.getElementById('editPNote').value = p.note || '';
+  openPanel('editProjectPanel');
+  hideProjectCtxMenu();
+});
+
+document.getElementById('projCtxDelete').addEventListener('click', () => {
+  const p = getProject(projCtxPid);
+  if (!p) return;
+  if (!confirm('确认删除项目「' + p.name + '」？\n注：不会删除已填入排产表中的该项目的色块。')) return;
+  projects = projects.filter(x => x.id !== projCtxPid);
+  if (selectedProjectId === projCtxPid) selectedProjectId = null;
+  saveState(); buildLegend(); hideProjectCtxMenu();
+});
+
+document.getElementById('editPColor').addEventListener('input', function() {
+  document.getElementById('editPHex').value = this.value;
+});
+document.getElementById('editPHex').addEventListener('input', function() {
+  if (/^#[0-9a-fA-F]{6}$/.test(this.value)) document.getElementById('editPColor').value = this.value;
+});
+
+document.getElementById('confirmEditProject').addEventListener('click', () => {
+  const pid  = document.getElementById('editPid').value;
+  const name = document.getElementById('editPName').value.trim();
+  const color = document.getElementById('editPColor').value;
+  const note  = document.getElementById('editPNote').value.trim();
+  if (!name) { alert('项目名称不能为空'); return; }
+  const p = getProject(pid);
+  if (!p) return;
+  p.name = name; p.color = color; p.note = note;
+  saveState(); buildLegend(); buildTable(); closeAllPanels();
+});
+
+document.getElementById('cancelEditProject').addEventListener('click', closeAllPanels);
+
 // ==================== Reactor management ====================
 document.getElementById('manageReactorBtn').addEventListener('click', () => {
   buildReactorList();
@@ -816,7 +908,7 @@ document.getElementById('exportBtn').addEventListener('click', () => {
 
 // ==================== Panels ====================
 function openPanel(id) {
-  ['addProjectPanel','reactorPanel','cellPanel'].forEach(p => {
+  ['addProjectPanel','reactorPanel','cellPanel','editProjectPanel'].forEach(p => {
     document.getElementById(p).classList.remove('open');
   });
   const el = document.getElementById(id);
@@ -824,7 +916,7 @@ function openPanel(id) {
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 function closeAllPanels() {
-  ['addProjectPanel','reactorPanel','cellPanel'].forEach(p => {
+  ['addProjectPanel','reactorPanel','cellPanel','editProjectPanel'].forEach(p => {
     document.getElementById(p).classList.remove('open');
   });
 }
@@ -868,10 +960,11 @@ async function init() {
       } else {
         setSyncStatus('无云端数据');
       }
-    } catch(e) {
-      console.warn('云端同步失败:', e);
-      setSyncStatus('同步失败');
-    }
+  } catch(e) {
+    console.error('云端同步失败:', e);
+    setSyncStatus('同步失败(' + (e.message || e.name || 'error') + ')');
+    setTimeout(() => setSyncStatus('已同步'), 4000);
+  }
   } else {
     setSyncStatus('本地模式');
     const badge = document.getElementById('syncStatus');
