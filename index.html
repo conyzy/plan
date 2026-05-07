@@ -198,7 +198,8 @@ td.today-col { background: #fff8f8; }
     <button class="btn" id="printBtn">打印</button>
     <button class="btn" id="exportBtn">导出 CSV</button>
     <button class="btn danger" id="clearMonthBtn">清空本月</button>
-    <span id="syncStatus" style="font-size:11px;color:#b4b2a9;margin-left:auto">数据自动保存</span>
+    <button class="btn primary" id="saveCloudBtn">保存到云端</button>
+    <span id="syncStatus" style="font-size:11px;color:#b4b2a9;margin-left:auto">本地模式</span>
   </div>
 
   <div class="stats">
@@ -428,35 +429,28 @@ function mergeLocal(cloud, local) {
 }
 
 // ==================== 保存数据 ========================
-let saveTimer = null;
-let pendingSave = false;
+// 仅本地保存（每次操作后自动触发）
+function persistData() {
+  localStorage.setItem(LS_PLAN,      JSON.stringify(plan));
+  localStorage.setItem(LS_PROJECTS, JSON.stringify(projects));
+  localStorage.setItem(LS_REACTORS, JSON.stringify(reactors));
+}
 
-async function persistData() {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    pendingSave = true;
-    setSyncStatus('保存中...');
-    try {
-      if (USE_CLOUD) {
-        await Promise.all([
-          cloudFetch(JSONBIN_CONFIG.metaBinUrl, 'PUT', { projects, reactors }, 10000),
-          cloudFetch(JSONBIN_CONFIG.planBinUrl, 'PUT',  plan, 10000),
-        ]);
-      }
-      localStorage.setItem(LS_PLAN,      JSON.stringify(plan));
-      localStorage.setItem(LS_PROJECTS, JSON.stringify(projects));
-      localStorage.setItem(LS_REACTORS, JSON.stringify(reactors));
-      setSyncStatus('已同步');
-    } catch(e) {
-      const errMsg = e.message || e.name || '网络错误';
-      console.warn('云端保存失败，仅本地保存:', e);
-      localStorage.setItem(LS_PLAN,      JSON.stringify(plan));
-      localStorage.setItem(LS_PROJECTS, JSON.stringify(projects));
-      localStorage.setItem(LS_REACTORS, JSON.stringify(reactors));
-      setSyncStatus('仅本地保存(' + errMsg + ')');
-    }
-    pendingSave = false;
-  }, 400);
+// 手动保存到云端（点击按钮触发）
+async function saveToCloud() {
+  if (!USE_CLOUD) { alert('云端未配置'); return; }
+  setSyncStatus('保存中...');
+  try {
+    await Promise.all([
+      cloudFetch(JSONBIN_CONFIG.metaBinUrl, 'PUT', { projects, reactors }, 10000),
+      cloudFetch(JSONBIN_CONFIG.planBinUrl, 'PUT',  plan, 10000),
+    ]);
+    setSyncStatus('已同步云端');
+  } catch(e) {
+    const errMsg = e.message || e.name || '网络错误';
+    console.warn('云端保存失败:', e);
+    setSyncStatus('云端保存失败(' + errMsg + ')');
+  }
 }
 
 // ==================== 辅助 ========================
@@ -878,6 +872,9 @@ document.getElementById('nextMonth').addEventListener('click', () => {
   refresh();
 });
 
+// ==================== Save to cloud ====================
+document.getElementById('saveCloudBtn').addEventListener('click', () => saveToCloud());
+
 // ==================== Clear month ====================
 document.getElementById('clearMonthBtn').addEventListener('click', () => {
   if (!confirm('确认清空 ' + fmtMonth(viewYear,viewMonth) + ' 所有排产数据？此操作不可恢复！')) return;
@@ -959,26 +956,22 @@ async function init() {
         new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
       ]);
       if (cloud) {
-        // 云端有数据则覆盖（以云端为准）
         projects = cloud.projects;
         reactors = cloud.reactors.length ? cloud.reactors : defaultReactors();
         plan     = cloud.plan;
         pidCounter = projects.length ? Math.max(...projects.map(p => parseInt(p.id.replace('p','')) || 0)) + 1 : 7;
         if (projects.length) selectedProjectId = projects[0].id;
         refresh();
-        setSyncStatus('已同步');
+        setSyncStatus('已加载云端数据');
       } else {
-        setSyncStatus('无云端数据');
+        setSyncStatus('本地模式');
       }
-  } catch(e) {
-    console.error('云端同步失败:', e);
-    setSyncStatus('同步失败(' + (e.message || e.name || 'error') + ')');
-    setTimeout(() => setSyncStatus('已同步'), 4000);
-  }
+    } catch(e) {
+      console.error('云端加载失败:', e);
+      setSyncStatus('本地模式');
+    }
   } else {
     setSyncStatus('本地模式');
-    const badge = document.getElementById('syncStatus');
-    if (badge) badge.style.color = '#e8a020';
     const banner = document.getElementById('cloudBanner');
     if (banner) banner.classList.add('show');
   }
