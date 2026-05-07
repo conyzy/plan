@@ -183,7 +183,7 @@ td.today-col { background: #fff8f8; }
 <div class="cloud-banner" id="cloudBanner">
   <b>首次使用需配置 Token</b> — 按 F12 打开浏览器控制台，粘贴并回车：<br>
   <code>localStorage.setItem('plan_gh_token','你的GitHubToken')</code><br>
-  然后刷新页面。Token 在 <a href="https://github.com/settings/tokens" target="_blank">这里生成</a>（勾选 repo 权限）。
+  然后刷新页面。Token 在 <a href="https://github.com/settings/tokens" target="_blank">这里生成</a>（勾选 gist 权限）。
 </div>
 <div class="wrap">
 
@@ -343,21 +343,15 @@ let reactors = [];
 let pidCounter = 7;
 let syncStatus = '加载中...';
 
-// ==================== 云端配置 (GitHub API) ========================
-// Token 保存在 localStorage，用户首次使用时配置一次即可
+// ==================== 云端配置 (GitHub Gist) ========================
+// Token 和 Gist ID 都保存在 localStorage
 const GITHUB_TOKEN_KEY = 'plan_gh_token';
-const GITHUB_CONFIG = {
-  get token() { return localStorage.getItem(GITHUB_TOKEN_KEY) || ''; },
-  owner:     'conyzy',
-  repo:      'conyzy.github.io',
-  planPath:  'plan/data/plan.json',
-  metaPath:  'plan/data/meta.json',
-  branch:    'main',
-};
+const GIST_ID_KEY     = 'plan_gist_id';
 const USE_CLOUD = !!localStorage.getItem(GITHUB_TOKEN_KEY);
 
-// GitHub API 读写封装
-async function githubApi(path, method, body, timeoutMs) {
+// Gist API 封装（支持超时）
+async function gistApi(method, path, body, timeoutMs) {
+  const token = localStorage.getItem(GITHUB_TOKEN_KEY) || '';
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs || 15000);
   try {
@@ -365,7 +359,7 @@ async function githubApi(path, method, body, timeoutMs) {
       method: method || 'GET',
       signal: ctrl.signal,
       headers: {
-        'Authorization': 'Bearer ' + GITHUB_CONFIG.token,
+        'Authorization': 'Bearer ' + token,
         'Accept': 'application/vnd.github.v3+json',
       },
     };
@@ -375,8 +369,9 @@ async function githubApi(path, method, body, timeoutMs) {
     }
     const res = await fetch('https://api.github.com' + path, opts);
     clearTimeout(timer);
-    if (!res.ok) throw new Error(method + ' ' + res.status + ' ' + (await res.text().catch(()=>'')));
-    if (method === 'GET' && res.status !== 204) return res.json();
+    const text = await res.text().catch(() => '');
+    if (!res.ok) throw new Error(method + ' ' + res.status + ' ' + text);
+    if (method === 'GET' && res.status !== 204) return JSON.parse(text || '{}');
     return { ok: true };
   } catch(e) {
     clearTimeout(timer);
@@ -384,49 +379,57 @@ async function githubApi(path, method, body, timeoutMs) {
   }
 }
 
-// 读取 GitHub 文件内容 (自动 base64 解码，支持中文)
-async function githubRead(path) {
-  const data = await githubApi(path, 'GET', null);
-  if (!data.content) return null;
-  const base64 = data.content.replace(/\n/g, '');
-  const binaryStr = atob(base64);
-  const bytes = new Uint8Array(binaryStr.length);
-  for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-  const content = new TextDecoder('utf-8').decode(bytes);
-  return { json: JSON.parse(content), sha: data.sha };
+// 读取 Gist
+async function gistRead(gistId) {
+  const data = await gistApi('GET', '/gists/' + gistId);
+  const files = data.files || {};
+  const metaFile = files['meta.json'];
+  const planFile = files['plan.json'];
+  const meta = metaFile ? JSON.parse(metaFile.content) : null;
+  const planData = planFile ? JSON.parse(planFile.content) : {};
+  return { meta, planData, sha: data.version };
 }
 
-// 写入 GitHub 文件 (自动 base64 编码)
-async function githubWrite(path, content, message, sha) {
-  const body = {
-    message: message || 'update',
-    content: btoa(unescape(encodeURIComponent(JSON.stringify(content, null, 2)))),
-    branch: GITHUB_CONFIG.branch,
-  };
-  if (sha) body.sha = sha;
-  return githubApi(path, 'PUT', body);
+// 写入 Gist（首次创建）
+async function gistCreate(metaContent, planContent) {
+  return gistApi('POST', '/gists', {
+    description: '反应釜排产数据',
+    public: false,
+    files: {
+      'meta.json': { content: JSON.stringify(metaContent, null, 2) },
+      'plan.json': { content: JSON.stringify(planContent, null, 2) },
+    },
+  });
+}
+
+// 更新 Gist
+async function gistUpdate(gistId, sha, metaContent, planContent) {
+  return gistApi('PATCH', '/gists/' + gistId, {
+    description: '反应釜排产数据',
+    files: {
+      'meta.json': { content: JSON.stringify(metaContent, null, 2) },
+      'plan.json': { content: JSON.stringify(planContent, null, 2) },
+    },
+  });
 }
 
 // ==================== 加载数据 ========================
 async function loadFromCloud() {
   if (!USE_CLOUD) return null;
+  const gistId = localStorage.getItem(GIST_ID_KEY);
+  if (!gistId) return null;
   try {
-    const [metaResult, planResult] = await Promise.all([
-      githubRead('/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.metaPath),
-      githubRead('/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.planPath).catch(() => null),
+    const result = await Promise.race([
+      gistRead(gistId),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000)),
     ]);
-    const meta = metaResult ? metaResult.json : null;
-    const planData = planResult ? planResult.json : {};
-
+    const meta = result.meta;
+    const planData = result.planData || {};
     if (!meta || (Array.isArray(meta.projects) && meta.projects.length === 0 &&
                   Object.keys(planData).length === 0)) {
       return null;
     }
-
-    // 保存 sha 供后续写入使用
-    window.__metaSha = metaResult ? metaResult.sha : null;
-    window.__planSha = planResult ? planResult.sha : null;
-
+    window.__gistSha = result.sha;
     return {
       projects: Array.isArray(meta.projects) ? meta.projects : [],
       reactors: Array.isArray(meta.reactors) && meta.reactors.length > 0
@@ -452,10 +455,7 @@ function loadFromLocal() {
 }
 
 function mergeLocal(cloud, local) {
-  // 云端为主，但保留本地独有的数据（跨设备使用）
-  if (!cloud.plan || Object.keys(cloud.plan).length === 0) {
-    return local;
-  }
+  if (!cloud.plan || Object.keys(cloud.plan).length === 0) return local;
   return cloud;
 }
 
@@ -472,24 +472,26 @@ async function saveToCloud() {
   if (!USE_CLOUD) { alert('云端未配置'); return; }
   setSyncStatus('保存中...');
   try {
-    // 每次保存前都从云端获取最新 SHA，避免 409 冲突
-    const [metaInfo, planInfo] = await Promise.all([
-      githubApi('/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.metaPath, 'GET', null).catch(()=>({})),
-      githubApi('/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.planPath, 'GET', null).catch(()=>({})),
-    ]);
-    const metaSha = metaInfo.sha || null;
-    const planSha = planInfo.sha || null;
+    const gistId = localStorage.getItem(GIST_ID_KEY);
+    const metaContent = { projects, reactors };
 
-    await Promise.all([
-      githubWrite(
-        '/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.metaPath,
-        { projects, reactors }, 'update meta', metaSha
-      ),
-      githubWrite(
-        '/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.planPath,
-        plan, 'update plan', planSha
-      ),
-    ]);
+    let result;
+    if (gistId) {
+      // 已创建过 Gist，更新
+      const gistData = await gistRead(gistId).catch(() => null);
+      if (gistData) {
+        result = await gistUpdate(gistId, gistData.sha, metaContent, plan);
+      } else {
+        // Gist 不存在，重新创建
+        result = await gistCreate(metaContent, plan);
+      }
+    } else {
+      // 首次创建 Gist
+      result = await gistCreate(metaContent, plan);
+    }
+
+    // 保存 Gist ID 供后续使用
+    localStorage.setItem(GIST_ID_KEY, result.id);
     setSyncStatus('已同步云端 ✓');
   } catch(e) {
     const errMsg = e.message || e.name || '网络错误';
