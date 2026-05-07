@@ -377,14 +377,23 @@ async function cloudFetch(url, method, body, timeoutMs) {
 }
 
 // ==================== 加载数据 ========================
+function unwrap(data) {
+  if (data && typeof data === 'object' && 'record' in data) return data.record;
+  return data;
+}
+
 async function loadFromCloud() {
   if (!USE_CLOUD) return null;
   try {
-    // meta bin: { projects:[], reactors:[], plan:{} }
-    const meta = await cloudFetch(JSONBIN_CONFIG.metaBinUrl);
-    // plan bin: 整个 plan 对象
-    let planData = {};
-    try { planData = await cloudFetch(JSONBIN_CONFIG.planBinUrl); } catch(e) {}
+    const metaRaw    = await cloudFetch(JSONBIN_CONFIG.metaBinUrl,  'GET', null, 10000);
+    const planRaw    = await cloudFetch(JSONBIN_CONFIG.planBinUrl,  'GET', null, 10000).catch(() => ({}));
+    const meta      = unwrap(metaRaw) || {};
+    const planData  = unwrap(planRaw) || {};
+
+    if (!meta || (Array.isArray(meta.projects) && meta.projects.length === 0 &&
+                  Object.keys(planData).length === 0)) {
+      return null; // 空 bin 认为无数据
+    }
 
     return {
       projects: Array.isArray(meta.projects) ? meta.projects : [],
@@ -430,20 +439,21 @@ async function persistData() {
     try {
       if (USE_CLOUD) {
         await Promise.all([
-          cloudFetch(JSONBIN_CONFIG.metaBinUrl, 'PUT', { projects, reactors }),
-          cloudFetch(JSONBIN_CONFIG.planBinUrl, 'PUT',  plan),
+          cloudFetch(JSONBIN_CONFIG.metaBinUrl, 'PUT', { projects, reactors }, 10000),
+          cloudFetch(JSONBIN_CONFIG.planBinUrl, 'PUT',  plan, 10000),
         ]);
       }
       localStorage.setItem(LS_PLAN,      JSON.stringify(plan));
-      localStorage.setItem(LS_PROJECTS,   JSON.stringify(projects));
-      localStorage.setItem(LS_REACTORS,  JSON.stringify(reactors));
+      localStorage.setItem(LS_PROJECTS, JSON.stringify(projects));
+      localStorage.setItem(LS_REACTORS, JSON.stringify(reactors));
       setSyncStatus('已同步');
     } catch(e) {
+      const errMsg = e.message || e.name || '网络错误';
       console.warn('云端保存失败，仅本地保存:', e);
       localStorage.setItem(LS_PLAN,      JSON.stringify(plan));
-      localStorage.setItem(LS_PROJECTS,  JSON.stringify(projects));
-      localStorage.setItem(LS_REACTORS,  JSON.stringify(reactors));
-      setSyncStatus('仅本地保存');
+      localStorage.setItem(LS_PROJECTS, JSON.stringify(projects));
+      localStorage.setItem(LS_REACTORS, JSON.stringify(reactors));
+      setSyncStatus('仅本地保存(' + errMsg + ')');
     }
     pendingSave = false;
   }, 400);
