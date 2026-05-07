@@ -181,8 +181,9 @@ td.today-col { background: #fff8f8; }
 </head>
 <body>
 <div class="cloud-banner" id="cloudBanner">
-  <b>云端同步未配置</b> — 请打开 HTML 文件，找到 <code>JSONBIN_CONFIG</code> 填入 JSONBin.io 的
-  Bin URL 和 API Key（<a href="https://jsonbin.io" target="_blank">去注册 →</a>）。当前使用本地存储。
+  <b>首次使用需配置 Token</b> — 按 F12 打开浏览器控制台，粘贴并回车：<br>
+  <code>localStorage.setItem('plan_gh_token','你的GitHubToken')</code><br>
+  然后刷新页面。Token 在 <a href="https://github.com/settings/tokens" target="_blank">这里生成</a>（勾选 repo 权限）。
 </div>
 <div class="wrap">
 
@@ -350,51 +351,89 @@ let reactors = [];
 let pidCounter = 7;
 let syncStatus = '加载中...';
 
-// ==================== 云端 API ========================
-async function cloudFetch(url, method, body, timeoutMs) {
+// ==================== 云端配置 (GitHub API) ========================
+// Token 保存在 localStorage，用户首次使用时配置一次即可
+const GITHUB_TOKEN_KEY = 'plan_gh_token';
+const GITHUB_CONFIG = {
+  get token() { return localStorage.getItem(GITHUB_TOKEN_KEY) || ''; },
+  owner:     'conyzy',
+  repo:      'conyzy.github.io',
+  planPath:  'plan/data/plan.json',
+  metaPath:  'plan/data/meta.json',
+  branch:    'main',
+};
+const USE_CLOUD = !!localStorage.getItem(GITHUB_TOKEN_KEY);
+
+// GitHub API 读写封装
+async function githubApi(path, method, body, timeoutMs) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs || 5000);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs || 15000);
   try {
     const opts = {
       method: method || 'GET',
       signal: ctrl.signal,
       headers: {
-        'X-Master-Key': JSONBIN_CONFIG.apiKey,
-        'X-Bin-Meta': 'false',
+        'Authorization': 'Bearer ' + GITHUB_CONFIG.token,
+        'Accept': 'application/vnd.github.v3+json',
       },
     };
     if (body) {
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(body);
     }
-    const res = await fetch(url, opts);
+    const res = await fetch('https://api.github.com' + path, opts);
     clearTimeout(timer);
-    if (!res.ok) throw new Error(method + ' ' + res.status);
-    return res.json();
+    if (!res.ok) throw new Error(method + ' ' + res.status + ' ' + (await res.text().catch(()=>'')));
+    if (method === 'GET' && res.status !== 204) return res.json();
+    return { ok: true };
   } catch(e) {
     clearTimeout(timer);
     throw e;
   }
 }
 
-// ==================== 加载数据 ========================
-function unwrap(data) {
-  if (data && typeof data === 'object' && 'record' in data) return data.record;
-  return data;
+// 读取 GitHub 文件内容 (自动 base64 解码，支持中文)
+async function githubRead(path) {
+  const data = await githubApi(path, 'GET', null);
+  if (!data.content) return null;
+  const base64 = data.content.replace(/\n/g, '');
+  const binaryStr = atob(base64);
+  const bytes = new Uint8Array(binaryStr.length);
+  for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+  const content = new TextDecoder('utf-8').decode(bytes);
+  return { json: JSON.parse(content), sha: data.sha };
 }
 
+// 写入 GitHub 文件 (自动 base64 编码)
+async function githubWrite(path, content, message, sha) {
+  const body = {
+    message: message || 'update',
+    content: btoa(unescape(encodeURIComponent(JSON.stringify(content, null, 2)))),
+    branch: GITHUB_CONFIG.branch,
+  };
+  if (sha) body.sha = sha;
+  return githubApi(path, 'PUT', body);
+}
+
+// ==================== 加载数据 ========================
 async function loadFromCloud() {
   if (!USE_CLOUD) return null;
   try {
-    const metaRaw    = await cloudFetch(JSONBIN_CONFIG.metaBinUrl,  'GET', null, 10000);
-    const planRaw    = await cloudFetch(JSONBIN_CONFIG.planBinUrl,  'GET', null, 10000).catch(() => ({}));
-    const meta      = unwrap(metaRaw) || {};
-    const planData  = unwrap(planRaw) || {};
+    const [metaResult, planResult] = await Promise.all([
+      githubRead('/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.metaPath),
+      githubRead('/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.planPath).catch(() => null),
+    ]);
+    const meta = metaResult ? metaResult.json : null;
+    const planData = planResult ? planResult.json : {};
 
     if (!meta || (Array.isArray(meta.projects) && meta.projects.length === 0 &&
                   Object.keys(planData).length === 0)) {
-      return null; // 空 bin 认为无数据
+      return null;
     }
+
+    // 保存 sha 供后续写入使用
+    window.__metaSha = metaResult ? metaResult.sha : null;
+    window.__planSha = planResult ? planResult.sha : null;
 
     return {
       projects: Array.isArray(meta.projects) ? meta.projects : [],
@@ -441,11 +480,25 @@ async function saveToCloud() {
   if (!USE_CLOUD) { alert('云端未配置'); return; }
   setSyncStatus('保存中...');
   try {
-    await Promise.all([
-      cloudFetch(JSONBIN_CONFIG.metaBinUrl, 'PUT', { projects, reactors }, 30000),
-      cloudFetch(JSONBIN_CONFIG.planBinUrl, 'PUT',  plan, 30000),
+    // 先读取 sha（需要 sha 才能 PUT）
+    const [metaInfo, planInfo] = await Promise.all([
+      githubApi('/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.metaPath, 'GET', null).catch(()=>({})),
+      githubApi('/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.planPath, 'GET', null).catch(()=>({})),
     ]);
-    setSyncStatus('已同步云端');
+    const metaSha = metaInfo.sha || null;
+    const planSha = planInfo.sha || null;
+
+    await Promise.all([
+      githubWrite(
+        '/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.metaPath,
+        { projects, reactors }, 'update meta', metaSha
+      ),
+      githubWrite(
+        '/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.planPath,
+        plan, 'update plan', planSha
+      ),
+    ]);
+    setSyncStatus('已同步云端 ✓');
   } catch(e) {
     const errMsg = e.message || e.name || '网络错误';
     console.warn('云端保存失败:', e);
