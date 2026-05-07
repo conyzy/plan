@@ -472,7 +472,7 @@ async function saveToCloud() {
   if (!USE_CLOUD) { alert('云端未配置'); return; }
   setSyncStatus('保存中...');
   try {
-    // 先读取 sha（需要 sha 才能 PUT）
+    // 每次保存前都从云端获取最新 SHA，避免 409 冲突
     const [metaInfo, planInfo] = await Promise.all([
       githubApi('/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.metaPath, 'GET', null).catch(()=>({})),
       githubApi('/repos/' + GITHUB_CONFIG.owner + '/' + GITHUB_CONFIG.repo + '/contents/' + GITHUB_CONFIG.planPath, 'GET', null).catch(()=>({})),
