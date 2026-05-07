@@ -442,8 +442,8 @@ async function saveToCloud() {
   setSyncStatus('保存中...');
   try {
     await Promise.all([
-      cloudFetch(JSONBIN_CONFIG.metaBinUrl, 'PUT', { projects, reactors }, 10000),
-      cloudFetch(JSONBIN_CONFIG.planBinUrl, 'PUT',  plan, 10000),
+      cloudFetch(JSONBIN_CONFIG.metaBinUrl, 'PUT', { projects, reactors }, 30000),
+      cloudFetch(JSONBIN_CONFIG.planBinUrl, 'PUT',  plan, 30000),
     ]);
     setSyncStatus('已同步云端');
   } catch(e) {
